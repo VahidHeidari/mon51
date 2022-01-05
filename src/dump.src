@@ -1,0 +1,174 @@
+$debug
+$title(*** DUMP MEMORY TO CONSOLE ***)
+$pagewidth(98)
+$nopaging
+$nosymbols
+;********************************************************************
+;                                                                   *
+; DUMP MEMORY COMMAND                                               *
+;                                                                   *
+;       FORMAT: D<char><start>,<end>                                *
+;                                                                   *
+;               D       - dump memory command                       *
+;               <char>  - memory space selector as follows:         *
+;                               I = internal data RAM               *
+;                               X = external data RAM               *
+;                               C = code memory                     *
+;                               B = bit address space               *
+;                               R = SFRs                            *
+;               <start> - starting address to dump                  *
+;               <end>   - ending address to dump                    *
+;                                                                   *
+;********************************************************************
+        extrn code (getcmd, outchr, htoa, out2hx, rsfr, isgrph)
+        extrn code (getval, inchar, outhex)
+        extrn data (parmtr, linbuf)
+        extrn bit (bit_sp, int_sp, reg_sp, x13_bit, r_flag)
+        public dump, outdat, outadd
+
+onchip  segment data
+eprom   segment code
+cr      equ     0DH
+xoff    equ     13H
+space   equ     ' '
+
+        rseg    eprom
+dump:   mov     dph,parmtr      ;starting address to dump
+        mov     dpl,parmtr+1
+dump1:  mov     ascbuf,#0       ;initialize ASCII string to NULL
+        mov     r1,#ascbuf      ;R1 = pointer into ASCII string
+        jb      x13_bit,dump1a  ;check keyboard status, which is
+        jnb     r_flag,dump2    ; r_flag if x13 jumper installed, or
+        sjmp    dump1b
+dump1a: jnb     ri,dump2        ; ri if x13 jumper not installed 
+dump1b: acall   inchar
+        cjne    a,#xoff,dump2   ;if Control-S
+        acall   inchar          ; wait for next key
+dump2:  acall   getval          ;read byte of data
+        push    acc
+        acall   outadd
+dump3:  pop     acc
+        acall   insert          ;add to ASCII buffer
+        acall   outdat          ;send to console
+        jc      dump1           ;if C, new line
+        acall   getval
+        push    acc
+        sjmp     dump3
+
+;********************************************************************
+; OUTADD - OUTput ADDress to console                                *
+;                                                                   *
+;       enter:  DPTR contains address; one memory space selector    *
+;                bit set                                            *
+;       exit:   appropriate size (8-bit or 16-bit) address sent to  *
+;                console; followed by " = " if "set" command active *
+;       uses:   out2hx, outchr                                      *
+;                                                                   *
+;********************************************************************
+outadd: jb      bit_sp,outad5   ;if bit, register, or internal space
+        jb      reg_sp,outad5   ; only send 8-bit address
+        jb      int_sp,outad5   
+        mov     a,dph
+        acall   out2hx
+outad2: mov     a,dpl
+        acall   out2hx
+        mov     a,linbuf        ;get command character
+        cjne    a,#'S',outad3
+outad4: mov     a,#space
+        acall   outchr
+        mov     a,#'='          ;send '=' if "set" command
+        acall   outchr
+outad3: mov     a,#space
+        acall   outchr
+        ret
+outad5: mov     a,dph           ;address must be in range
+        jz      outad2          ; 00H to FFH for bit, register,
+        jmp     getcmd          ; or internal memory spaces
+
+;********************************************************************
+; OUTDAT - OUTput DATa to console                                   *
+;                                                                   *
+;       enter:  data in acc; one memory space selector bit set      *
+;       exit:   appropriate size value (1 bit or 8 bit) sent to     *
+;                console; ASCII buffer flushed if dump command and  *
+;                end of boundary reached                            *
+;       uses:   outhex, outasc                                      *
+;                                                                   *
+;********************************************************************
+outdat: swap    a               ;this gets tricky!
+        jb      bit_sp,outdt2   ;if bit space,
+        acall   outhex          ;only send nibble
+outdt2: swap    a
+        acall   outhex
+        mov     a,linbuf        ;if "set" command,
+        xrl     a,#'S'          ; don't check <end>
+        jz      outad4          ; send ' = '
+        mov     a,dph           ;DPTR = <end>?
+        xrl     a,parmtr+2
+        jnz     outdt3
+        mov     a,dpl
+        xrl     a,parmtr+3
+        jnz     outdt3
+        jb      reg_sp,outdt8   ;if bit or register space,
+        jb      bit_sp,outdt8   ; don't send ASCII
+        acall   outasc          ;yes: flush buffer
+outdt8: jmp     getcmd          ;  & get next command
+outdt3: inc     dptr            ;no:  onwards
+        jb      reg_sp,outdt7   ;if register space, one byte/line
+        jnb     bit_sp,outdt6   ;if bit space, check for 8-bit
+        mov     a,dpl           ; boundary 
+        anl     a,#07H          
+        jz      outdt7
+outdt6: mov     a,dpl           ;if internal, external, or code 
+        anl     a,#0FH          ; space, check for 16-byte boundary
+        clr     c
+        jnz     outdt4          
+        acall   outasc          ;if there, flush ASCII buffer
+outdt7: mov     a,#cr
+        acall   outchr
+        setb    c
+outdt4: ret
+
+;********************************************************************
+; INSERT - INSERT ASCII code into buffer                            *
+;                                                                   *
+;       enter:  byte of data in accumulator                         *
+;       exit:   ASCII code in buffer ('.' substituted for control   *
+;                codes)                                             *
+;       uses:   isgrph                                              *
+;                                                                   *
+;********************************************************************
+insert: push    acc
+        acall   isgrph          ;is it a displayable character?
+        jc      insrt2          ;yes: leave as is
+        mov     a,#'.'          ;no:  substitute period
+insrt2: mov     @r1,a
+        inc     r1
+        mov     @r1,#0          ;null character at end
+        pop     acc
+        ret
+
+;********************************************************************
+; OUTASC - OUTput ASCii codes to console                            *
+;                                                                   *
+;       enter:  -                                                   *
+;       exit:   buffer of ASCII graphic codes sent to console       *
+;                                                                   *
+;********************************************************************
+outasc: mov     a,#space
+        acall   outchr
+        mov     r1,#ascbuf
+out3:   mov     a,@r1
+        jnz     out2
+        ret
+out2:   acall   outchr
+        inc     r1
+        sjmp    out3
+
+;********************************************************************
+; Create a buffer in internal RAM to hold ASCII codes to be dumped  *
+; to console for DUMP command.                                      *
+;********************************************************************
+        rseg    onchip
+ascbuf: ds      17              ;ascii buffer
+        end

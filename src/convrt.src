@@ -1,0 +1,76 @@
+$debug
+$title(*** CONVERSION SUBROUTINES ***)
+$pagewidth(98)
+$nopaging
+$nosymbols
+$nolist                 ;next line contains $include(macros.src)
+$include(macros.src)
+$list
+;previous line contains $list
+;********************************************************************
+;                                                                   *
+; CONVRT.SRC - CONVERSION SUBROUTINES                               *
+;                                                                   *
+;********************************************************************
+        public  atoh, htoa, touppr, tolowr
+        extrn code(isalph)
+
+eprom   segment code
+        rseg    eprom
+
+;********************************************************************
+; ATOH - Ascii TO Hex conversion                                    *
+;                                                                   *
+;       enter:  ASCII code in accumulator (assume hex character)    *
+;       exit:   hex nibble in ACC.0 - ACC.3; ACC.4 - ACC.7 cleared  *
+;                                                                   *
+;********************************************************************
+atoh:   clr     acc.7           ;ensure parity bit is off
+                                ;'0' to '9'?
+        %jle    ('9',atoh2)
+        add     a,#9            ;no:  adjust for range A-F
+atoh2:  anl     a,#0FH          ;yes: convert directly
+        ret
+
+;********************************************************************
+; HTOA - Hex TO Ascii conversion                                    *
+;                                                                   *
+;       enter:  hex nibble in ACC.0 to ACC.3                        *
+;       exit:   ASCII code in accumulator                           *
+;                                                                   *
+;********************************************************************
+htoa:   anl     a,#0FH          ;ensure upper nibble clear
+                                ;'A' to 'F'?
+        %jlt    (0AH,htoa2)
+        add     a,#7            ;yes: add extra
+htoa2:  add     a,#'0'          ;no:  convert directly
+        ret
+
+;********************************************************************
+; TOUPPR - convert character TO UPPeRcase                           *
+;                                                                   *
+;       enter:  ASCII code in accumulator                           *
+;       exit:   converted to uppercase if alphabetic (left as is    *
+;                otherwise)                                         *
+;       uses:   isalph                                              *
+;                                                                   *
+;********************************************************************
+touppr: call    isalph          ;is character alphabetic?
+        jnc     skip            ;no:  leave as is
+        clr     acc.5           ;yes: convert to uppercase by 
+skip:   ret                     ;     clearing bit 5
+
+;********************************************************************
+; TOLOWR - convert character TO LOWeRcase                           *
+;                                                                   *
+;       enter:  ASCII code in accumulator                           *
+;       exit:   converter to lowercase if alphabetic (left as is    *
+;                otherwise)                                         *
+;       uses:   isalph                                              *
+;                                                                   *
+;********************************************************************
+tolowr: call    isalph          ;is character alphabetic?
+        jnc     skip2           ;no:  leave as is
+        setb    acc.5           ;yes: convert to lowercase by setting
+skip2:  ret                     ;     bit 5
+        end

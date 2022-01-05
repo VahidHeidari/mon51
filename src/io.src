@@ -1,0 +1,279 @@
+$debug
+$title(*** INPUT/OUTPUT ROUTINES ***)
+$pagewidth(98)
+$nopaging
+$nosymbols
+;********************************************************************
+;                                                                   *
+; IO.SRC - INPUT/OUTPUT SUBROUTINES                                 *
+;                                                          SM 03/91 *
+;********************************************************************
+bel     equ     07H     ;ASCII bell code
+cr      equ     0DH     ;ASCII carriage return code
+esc     equ     1BH     ;ASCII escape code
+lf      equ     0AH     ;ASCII line feed code
+etx     equ     3       ;control-C (terminate input, get next cmd)
+dle     equ     10h     ;control-P (output to printer as well)
+del     equ     7FH     ;delete
+bs      equ     4       ;back space (VT100)
+TX_pin  bit     p1.7
+RX_pin  bit     p1.6
+
+        extrn   code(getcmd, htoa, touppr)
+        extrn   data(linbuf)
+        extrn   bit(p_bit, x13_bit)
+        extrn   number(endbuf, riot)
+        public  inchar, outchr, inline, outstr, outhex, out2hx
+        public  serial_io_using_interrupts, t_flag, r_flag
+        public  tb_count, r_idle
+
+eprom   segment code
+onchip  segment data
+bitram  segment bit
+
+;********************************************************************
+; The following buffers & flags are needed for character I/O using  *
+; interrupts.  Interrupts are used only if jumper X13 is installed. *
+; Jumpers X9 and X10 should be removed and jumpers X11 and X12      *
+; should be installed.  This connects the RS232 TXD and RXD lines   *
+; to P1.7 and P1.6 (rather than to P3.1 and P3.0).                  *
+;********************************************************************
+                rseg    onchip
+t_buff:         ds      1       ;transmit_buffer (character to send)
+r_buff:         ds      1       ;receive_buffer (character received)
+ti_count:       ds      1       ;transmit_interrupt_count
+ri_count:       ds      1       ;receive_interrupt_count
+tb_count:       ds      1       ;transmit_bit_count
+rb_count:       ds      1       ;receive_bit_count
+                rseg    bitram
+t_flag:         dbit    1       ;1 = end of character transmission
+r_flag:         dbit    1       ;1 = end of character reception
+r_idle:         dbit    1       ;1 = idle state
+
+;********************************************************************
+; OUTCHR -  OUTput CHaRacter to serial port                         *
+;           with odd parity added in ACC.7                          *
+;                                                                   *
+;  enter:   ASCII code in accumulator                               *
+;  exit:    character written to SBUF; <cr> sent as <cr><lf>; all   *
+;           registers intact                                        *
+;                                                                   *
+;********************************************************************
+        rseg    eprom
+outchr: push    acc             
+nl:     mov     c,p             ;add odd parity
+        cpl     c
+        mov     acc.7,c
+        jb      x13_bit,out1    ;if X13 installed, use interrupts
+        jnb     t_flag,$        ;wait for transmitter ready
+        clr     et1             ;begin "critical section"
+        clr     t_flag          ;>>>  clear flag and ...
+        mov     t_buff,a        ;>>>  load data to transmit
+        setb    et1             ;end "critical section"
+        sjmp    out2
+                                ;if X13 not installed, test TI
+out1:   jnb     ti,$            ;wait for transmitter ready
+        clr     ti              ;clear TI flag
+        mov     sbuf,a          ;done!
+out2:   clr     acc.7           ;remove parity bit
+        cjne    a,#cr,out3
+        mov     a,#lf
+        jmp     nl              ;if <cr>, send <lf> as well
+out3:   pop     acc
+        jnb     p_bit,out4      ;if printer control = off, exit
+        call    pchar           ;if on, print character
+out4:   ret
+
+;********************************************************************
+; INCHR -   INput CHaRacter from serial port                        *
+;                                                                   *
+;  enter:   no conditions                                           *
+;  exit:    ASCII code in ACC.0 to ACC.6; ACC.7 cleared; control-C  *
+;           aborts to prompt                                        *
+;                                                                   *
+;********************************************************************
+inchar: jb      x13_bit,in1     ;if X13 installed, use interrupts
+        jnb     r_flag,$        ;wait for receive_flag to be set
+        clr     et1             ;begin "critical section"
+        clr     r_flag          ;>>> clear receive_flag and ...
+        mov     a,r_buff        ;>>> read receive_buffer
+        setb    et1             ;end "critical section"
+        sjmp    in2
+                                ;if X13 not installed, test RI
+in1:    jnb     ri,$            ;wait for receiver interrupt
+        clr     ri              ;clear RI flag
+        mov     a,sbuf          ;done!
+in2:    clr     acc.7           ;clear parity bit (no error checking)
+        cjne    a,#etx,in3      ;if control-C,
+        jmp     getcmd          ; warm start
+in3:    ret
+
+;********************************************************************
+; INLINE -  INput LINE of characters                                *
+;           line must end with <cr>; maximum size set by buflen;    *
+;           <bs> or <del> deletes previous character                *
+;                                                                   *
+;  enter:   R0 points to input buffer in internal data RAM          *
+;  exit:    ASCII codes in internal RAM; 0 stored at end of line    *
+;  uses:    inchar, outchr                                          *
+;                                                                   *
+;********************************************************************
+inline: call    inchar          ;get character from console
+        call    touppr          ;convert to uppercase, if necessary
+        cjne    a,#dle,inlin7   ;is it control-P?
+        cpl     p_bit           ;yes: toggle printing flag bit
+        jmp     inline
+inlin7: call    outchr          ;echo character to port
+        mov     @r0,a           ;put in buffer
+        inc     r0
+        cjne    r0,#endbuf,inlin2 ;overflow?
+        mov     dptr,#inlin8
+        acall   outstr
+        jmp     getcmd
+inlin2: cjne    a,#bs,inlin3    ;back space?
+        sjmp    inlin5
+inlin3: cjne    a,#del,inlin6   ;delete?
+inlin5: dec     r0              ;yes: back up pointer twice
+        dec     r0
+        mov     dptr,#backup    ;back up cursor
+        call    outstr
+        jmp     inline
+inlin6: cjne    a,#cr,inline    ;character = <cr> ?
+        mov     @r0,#0          ;yes: store 0
+        ret                     ; and return
+backup: db      esc,'[D',0      ;VT100 sequence to backup cursor
+inlin8: db      bel,cr,'Error: Command too long',cr,0
+
+;********************************************************************
+; OUTSTR -  OUTput a STRing of characters                           *
+;                                                                   *
+;  enter:   DPTR points to character string in external code        *
+;           memory; string must end with 00H                        *
+;  exit:    characters written to SBUF                              *
+;  uses:    outchr                                                  *
+;                                                                   *
+;********************************************************************
+outstr: clr     a
+        movc    a,@a+dptr       ;get ASCII code
+        jz      outst2          ;if last code, done
+        call    outchr          ;if not last code, send it
+        inc     dptr            ;point to next code
+        sjmp    outstr         ; and get next character
+outst2: ret
+
+;********************************************************************
+; OUT2HX - OUTput 2 HeX characters to serial port                   *
+; OUTHEX - OUTput 1 HEX character to serial port                    *
+;                                                                   *
+;  enter:   accumulator contains byte of data                       *
+;  exit:    nibbles converted to ASCII & sent out serial port;      *
+;           OUT2HX sends both nibbles; OUTHEX only sends lower      *
+;           nibble; all registers intact                            *
+;  uses:    outchr, htoa                                            *
+;                                                                   *
+;********************************************************************
+out2hx: push    acc             ;save data
+        swap    a               ;send high nibble first
+        anl     a,#0FH          ;make sure upper nibble clear
+        call    htoa            ;convert hex nibble to ASCII
+        call    outchr          ;send to serial port
+        pop     acc
+outhex: push    acc             ;send low nibble
+        anl     a,#0FH
+        call    htoa
+        call    outchr
+        pop     acc
+        ret
+
+;********************************************************************
+; PCHAR -   Print CHARacter                                         *
+;           send character to Centronics interface on 8155;         *
+;           implements handshaking for -ACK, BUSY, and -STROBE      *
+;                                                                   *
+;  enter:   ASCII code in accumulator                               *
+;  exit:    character written to 8155 Port A                        *
+;                                                                   *
+;********************************************************************
+strobe  equ     92h             ;8051 port 1 interface line for
+busy    equ     91h             ; printer interface
+ack     equ     90h
+
+pchar:  push    acc
+        push    dph
+        push    dpl
+wait:   jb      busy,wait       ;wait for printer ready, i.e.,
+        jnb     ack,wait        ; BUSY = 0 AND -ACK = 1
+        mov     dptr,#riot + 1  ;8155 Port A address
+        clr     acc.7           ;clear 8th bit, if set
+        cjne    a,#cr,pchar2    ;substitute <lf> for <cr>
+        mov     a,#lf
+pchar2: movx    @dptr,a         ;send data to printer
+        setb    strobe          ;toggle strobe bit
+        clr     strobe
+        setb    strobe
+        pop     dpl
+        pop     dph
+        pop     acc
+        ret
+
+;********************************************************************
+; The following code, which executes upon a Timer 1 interrupt,      *
+; implements a full duplex software UART.  Timer 1 interrupts occur *
+; at a rate of 8 times the baud rate, or every 1 / (8 x 0.0012) =   *
+; 104 microseconds.  For transmit, a bit is output on P1.7 every 8  *
+; interrupts.  For receive, a bit is read in P1.6 every 8           *
+; interrupts starting 12 interrupts after the start bit is          *
+; detected.  At 12 MHz, worse case execution time for this routine  *
+; is 53 us.  (This occurs for the last interrupt for simultaneous   *
+; transmit and receive operations.)                                 *
+;********************************************************************
+serial_io_using_interrupts:
+        push    acc
+        push    psw
+        mov     c,r_idle        ;if r_idle = 1 & p1.6 = 1, no RX
+        anl     c,RX_pin        ; activity, therefore ...
+        jc      tx1             ; check for TX activity
+        jnb     r_idle,rx1      ;else, if r_idle = 0 & p1.6 = x, 
+                                ; reception in progress, check it out
+                                ;else, r_idle = 1 & p1.6 = 0, there-
+                                ; fore, start bit detected
+        clr     r_idle          ;clear r_idle (begin reception)
+        mov     ri_count,#12    ;11 interrupts to first data bit
+        mov     rb_count,#9     ;9 bits received (includes stop bit)
+        sjmp    tx1
+rx1:    djnz    ri_count,tx1    ;decrement receive_interrupt_count
+        mov     ri_count,#8     ;if 8th interrupt, reload and
+        mov     a,r_buff        ; read next serial bit on RXD (P1.6)
+        mov     c,RX_pin
+        rrc     a
+        mov     r_buff,a
+        djnz    rb_count,tx1    ;decrement receive_bit_count
+        mov     rb_count,#9     ;if 9th bit received, done
+        rlc     a               ;re-align bits (discard stop bit) and
+        mov     r_buff,a        ; save ASCII code in receive_buffer
+        setb    r_idle
+        setb    r_flag          ;done! (now check for TX activity)
+tx1:    jb      t_flag,tx4      ;if t_flag = 1, nothing to tramsmit
+        mov     a,tb_count      ;check transmit_bit_count
+        cjne    a,#11,tx2       ;if 11, first time here, therefore
+        clr     TX_pin          ; begin with start bit (p1.7 = 0)
+        dec     tb_count        ; decrement transmit_bit_count
+        mov     ti_count,#8     ;8 interrupts for each data bit
+        sjmp    tx4
+tx2:    djnz    ti_count,tx4    ;if transmit_interrupt_count not 0
+        mov     ti_count,#8     ; exit, otherwise reset count to 8 &
+        mov     a,t_buff        ; get next data bit to transmit
+        setb    c               ;(ensures 9th bit = stop bit)
+        rrc     a               ;right rotate (sends LSB first)
+        mov     TX_pin,c        ;put bit on p1.7 (TXD)
+        mov     t_buff,a        ;save in t_buff for next rotate
+        mov     a,tb_count      ;check for stop bit (stretch count)
+        cjne    a,#2,tx3        ;if count = 1, stop bit just sent
+        mov     ti_count,#16    ;stretch count to 16 (2 stop bits)
+tx3:    djnz    tb_count,tx4    ;if last bit,
+        mov     tb_count,#11    ; reset count and
+        setb    t_flag          ; hoist flag (done!)
+tx4:    pop     psw
+        pop     acc
+        reti
+        end

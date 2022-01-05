@@ -1,0 +1,194 @@
+$title (*** SET MEMORY TO VALUE ***)
+$debug
+$pagewidth (98)
+$nopaging
+$nosymbols
+$nolist                 ;next line contains $include(macros.src)
+$include(macros.src)
+$list
+;previous line contains $list
+;********************************************************************
+;                                                                   *
+; SET.SRC - SET MEMORY TO VALUE                                     *
+;                                                                   *
+;       FORMAT: S<char><add><cr>                                    *
+;                                                                   *
+;               S       - set command                               *
+;               <char>  - memory space selector                     *
+;                         B = bit address space                     *
+;                         R = SFRs                                  *
+;                         I = internal data RAM                     *
+;                         X = external data RAM                     *
+;                         C = code ROM                              *
+;               <add>   - address to set                            *
+;               <cr>    - carriage return                           *
+;                                                                   *
+;       FOLLOWED BY:    <cr>    - examine next                      *
+;                       <value> - write data                        *
+;                       -       - examine previous                  *
+;                       Q       - quit                              *
+;                       <sp>    - write same value into next        *
+;                                 address                           *
+;                                                                   *
+;********************************************************************
+        extrn   code (rsfr, wsfr, outadd, getpar, getcmd)
+        extrn   code (inline, outhex, outdat, outstr)
+        extrn   bit (bit_sp, cde_sp, int_sp, reg_sp, ext_sp)
+        extrn   data (parmtr, linbuf)
+        public  setcmd, getval
+
+bel     equ     07H
+cr      equ     0DH
+eprom   segment code
+        rseg    eprom
+
+setcmd: mov     dph,parmtr      ;address to examine and/or set
+        mov     dpl,parmtr+1
+set4:   acall   getval
+        push    acc
+        acall   outadd
+        pop     acc
+        acall   outdat
+        mov     r0,#linbuf+2    ;start address of data
+        acall   inline          
+        mov     a,linbuf+2      ;check response character
+        cjne    a,#'Q',set6     ;if 'Q', quit set command
+        ljmp    getcmd
+set6:   cjne    a,#'-',set7     ;if '-', decrement address pointer
+        %dec    dptr
+        sjmp    set4
+set7:   cjne    a,#0dh,set8     ;if <cr>, examine next location
+        inc     dptr            
+        sjmp    set4
+set8:   acall   getpar          ;otherwise a value has been entered
+        mov     a,parmtr+1      ;convert value and
+        acall   putval          ; put it into memory
+        inc     dptr            ;check out next location
+        sjmp    set4
+
+;********************************************************************
+; PUTVAL - PUT VALue into memory                                    *
+;                                                                   *
+;       enter:  DPTR contains address; ACC contains value; one      *
+;                memory space selector bit set as follows:          *
+;                 bit_sp = 1 for bit address space                  *
+;                 cde_sp = 1 for code ROM                           *
+;                 int_sp = 1 for internal data RAM                  *
+;                 reg_sp = 1 for SFRs                               *
+;                 ext_sp = 1 for external data RAM                  *
+;               If bit address space selected then                  *
+;                 R4 = byte address                                 *
+;                 R5 = read byte value                              *
+;               (register bank 0 assumed)                           *
+;               Bit will be inserted into read byte                 *
+;                 value and byte value will be                      *
+;                 written back to byte address                      *
+;       exit:   value written into memory                           *
+;                                                                   *
+;********************************************************************
+putval: mov     r0,dpl          ;put address in R0 also
+        jnb     int_sp,put2
+        mov     @r0,a           ;internal data RAM
+        ret
+put2:   jnb     ext_sp,put3
+        movx    @dptr,a         ;external data RAM
+        ret
+put3:   jnb     cde_sp,put4
+        ret                     ;sorry, can't write into code space
+put4:   jnb     bit_sp,put5
+        anl     a,#1            ;make sure bits 1-7 = 0
+        anl     0,#7            ;reduce R0 to bit address
+                                ;writing byte value
+        mov     r5,#0feh        ;build mask in R5
+        inc     r0
+put9:   djnz    r0,put7
+        sjmp    put8
+put7:   rl      a               ;adjust bit position
+        xch     a,r5
+        rl      a               ;adjust mask
+        xch     a,r5
+        sjmp    put9
+put8:   xch     a,r4            ;byte value read earlier
+        anl     a,r5            ;turn off bit of interest
+        orl     a,r4            ;set if entered value = 1
+                                ;byte value to write in accumulator
+        mov     r0,3            ;recover byte address
+        cjne    r0,#80h,$+3     ;SFR address?
+        jnc     put10           ;yes if C = 1
+        mov     @r0,a           ;Done!! Whew!
+        ret
+put5:   jnb     reg_sp,put6
+put10:  acall   wsfr
+        jc      put6
+        ret
+put6:   mov     dptr,#put11     ;no memory space selected
+        acall   outstr          ;unrecoverable error, send message
+        ljmp    getcmd          ; and get another command
+put11:  db      bel,cr,'Error: no memory space selected',cr,0
+
+;********************************************************************
+; GETVAL - GET VALue from memory                                    *
+;                                                                   *
+;       enter:  DPTR contains address; One memory space selector    *
+;                 bit set (see PUTVAL)                              *
+;       exit:   Value in ACC, C = 0                                 *
+;               If bit address space selected then                  *
+;                 R3 = byte address                                 *
+;                 R4 = read byte value                              *
+;                 (register bank 0 assumed)                         *
+;               If invalid SRF address, advance                     *
+;                 DPTR until valid address found                    *
+;                                                                   *
+;********************************************************************
+getval: mov     r0,dpl          ;put addres in R0 also                          
+        jnb     int_sp,get2
+        mov     a,@r0           ;internal data RAM
+        ret                     ;C = 0
+get2:   jnb     ext_sp,get3
+        movx    a,@dptr         ;external data RAM
+        ret                     ;C = 0
+get3:   jnb     cde_sp,get4
+        clr     a
+        movc    a,@a+dptr       ;code ROM
+        ret                     ;C = 0
+get4:   jnb     bit_sp,get5
+                                ;So you want to read a bit
+                                ;value, do you?
+                                ;This gets tricky!!
+        anl     0,#0f8h         ;reduce R0 to byte address
+        cjne    r0,#80h,$+3     ;if >= 80H, read SFR
+        jc      get6
+        mov     r3,0            ;save byte address in R3
+        acall   rsfr            ;first get byte value
+        mov     r4,a            ;save byte value in R4
+        jnc     get8            ;now extract bit
+        inc     dptr            ;if C = 1, try next SFR
+        sjmp    getval
+get6:   mov     a,r0            ;internal RAM, therefore
+        rr      a               ;build byte address in acc
+        rr      a               ;by translating as shown
+        rr      a
+        setb    acc.5           ;eg: bit 35H is at byte address 26H
+        mov     r0,a
+        mov     r3,a            ;save byte address in R3
+        mov     a,@r0           ;read byte value
+        mov     r4,a            ;save byte value in R4
+get8:   mov     r7,dpl          ;extract bit by rotating
+        anl     7,#7            ;right DPL mod 8 times
+        inc     r7
+get9:   djnz    r7,get10
+        sjmp    get11
+get10:  rr      a
+        sjmp    get9
+get11:  anl     a,#1            ;here's your bit
+        clr     c
+        ret
+get5:   jnb     reg_sp,get7
+get13:  acall   rsfr
+        jnc     get12           ;if invalid SFR address,
+        inc     dptr            ;increment DPTR & try again
+        inc     r0
+        sjmp    get13
+get12:  ret
+get7:   jmp     put6            ;Error: no memory space selected
+        end

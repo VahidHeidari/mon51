@@ -1,0 +1,25 @@
+$debug
+$pagewidth(80)
+	extrn code (outch,htoa)
+	public outhx
+out_hex	segment code
+	rseg	out_hex
+;
+;	OUTHX:	OUTput HeX bytes to serial port
+;	enter:	dptr points to byte of data
+;	exit:	two hex characters send out
+;
+outhx:	movx	a,@dptr
+	swap	a
+	call	htoa
+	call	outch
+	movx	a,@dptr
+	call	htoa
+	call	outch
+	ret
+	end
+cters send out
+;
+outhx:	movx	a,@dptr
+	swap	a
+	

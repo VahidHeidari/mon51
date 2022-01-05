@@ -1,0 +1,86 @@
+$debug
+$title(*** LOAD INTEL HEX FILE ***)
+$pagewidth(98)
+$nopaging
+$nosymbols
+;********************************************************************
+;                                                                   *
+; LOAD.SRC - LOAD INTEL HEX FILE COMMAND                            *
+;                                                                   *
+;  FORMAT: LO - load and return to MON51                            *
+;          LG - load and go to user program in RAM                  *
+;                                                                   *
+;********************************************************************
+         extrn    code (inchar, outstr, atoh, getcmd,touppr)
+         extrn    data (linbuf,parmtr)
+         extrn    number (ram)
+         public   load
+
+bel      equ      07H           ;ASCII bell code
+cr       equ      0DH           ;ASCII carraige code
+lf       equ      0AH           ;ASCII line feed code
+eof      equ      1AH           ;ASCII control-z (end-of-file)
+cancel   equ      03H           ;ASCII control-c (cancel)
+eprom    segment  code
+         rseg     eprom
+
+load:    mov      dptr,#mess1
+         acall    outstr
+load1:   acall    inchar
+         cjne     a,#eof,skip1
+         sjmp     done
+skip1:   cjne     a,#cancel,skip2
+         jmp      getcmd
+skip2:   cjne     a,#':',load1   ;each record begins with a ':'
+         mov      r1,#0          ;initialize checksum to 0
+         acall    gethex         ;get byte count from serial port
+         mov      b,a            ;use B as byte counter
+         jz       done           ;if B = 0, done
+load2:   inc      b              ;no:
+         acall    gethex         ;get address high byte
+         mov      dph,a
+         acall    gethex         ;get address low byte
+         mov      dpl,a
+         acall    gethex         ;get record type (ignore)
+load4:   acall    gethex         ;get data byte
+         movx     @dptr,a        ;store in 8031 external memory
+         inc      dptr
+         dec      b              ;repeat until count = 0
+         mov      a,b
+         jnz      load4
+         mov      a,r1           ;checksum should be zero
+         jz       load1          ;if so, get next record
+error:   mov      dptr,#mess4    ;if not, error
+         acall    outstr
+         sjmp     wait
+done:    mov      a,linbuf+1     ;Load and Go command?
+         acall    touppr
+         cjne     a,#'G',skip    ;no:  normal end to command
+         ljmp     ram            ;yes: go to user program
+skip:    mov      dptr,#mess3
+         acall    outstr
+wait:    acall    inchar         ;wait for eof before returning
+         cjne     a,#eof,wait
+         jmp      getcmd
+
+;********************************************************************
+; Get two characters from serial port and form a hex byte.  Also    *
+; add byte to checksum in R1.                                       *
+;********************************************************************
+gethex:  acall    inchar         ;get first character
+         acall    atoh           ;convert to hex
+         swap     a              ;put in upper nibble
+         mov      r0,a           ;save it
+         acall    inchar         ;get second character
+         acall    atoh           ;convert to hex
+         orl      a,r0           ;OR with first nibble
+         mov      r2,a           ;save byte
+         add      a,r1           ;add byte to checksum
+         mov      r1,a           ;restore checksum in R1
+         mov      a,r2           ;retrieve byte
+         ret
+mess1:   db       'Host download to SBC-51',cr
+         db       '^Z = end-of-file',cr,'^C = cancel',cr,0
+mess3:   db       'eof - file downloaded OK',0
+mess4:   db       bel,cr,'Error: ^Z Terminates',0
+         end

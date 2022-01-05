@@ -1,0 +1,24 @@
+         extrn code (notice,outstr)
+         public check_for_pirate
+
+eprom    segment code
+         rseg eprom
+
+check_for_pirate:   
+         mov   dptr,#notice
+         mov   a,#14
+         movc  a,@a+dptr
+         cjne  a,#'I',gotcha
+         mov   a,#17
+         movc  a,@a+dptr
+         cjne  a,#'S',gotcha
+         mov   a,#23
+         movc  a,@a+dptr
+         cjne  a,#'M',gotcha
+         ret
+gotcha:  mov   dptr,#message
+         call  outstr
+         sjmp  gotcha
+
+message: db    'I smell a fish ',0
+         end

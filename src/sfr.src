@@ -1,0 +1,95 @@
+$debug
+$title (*** READ AND WRITE SFRs ***)
+$pagewidth(98)
+$nopaging
+$nosymbols
+;********************************************************************
+;                                                                   *
+; SFR.SRC - READ AND WRITE SPECIAL FUNCTION REGISTERS               *
+;                                                                   *
+;********************************************************************
+
+        public rsfr, wsfr
+
+eprom   segment code
+        rseg    eprom
+
+;********************************************************************
+;                                                                   *
+; RSFR - Read Special Function Register                             *
+;                                                                   *
+;       enter:  R0 contains address of SFR to read                  *
+;       exit:   accumulator contains value and C = 0                *
+;               if invalid SFR, C = 1                               *
+;                                                                   *
+;********************************************************************
+
+; Let's get lazy and define a macro to do all the work.             
+%*define(read_if(address,sfr)) local skip
+        (cjne   r0,#%address,%skip      ;%sfr
+        mov     a,%address
+        ret
+%skip:  )
+rsfr:
+        %read_if(80h,p0)
+        %read_if(81h,sp)
+        %read_if(82h,dpl)
+        %read_if(83h,dph)
+        %read_if(88h,tcon)
+        %read_if(89h,tmod)
+        %read_if(8ah,tl0)
+        %read_if(8bh,tl1)
+        %read_if(8ch,th0)
+        %read_if(8dh,th1)
+        %read_if(90h,p1)
+        %read_if(98h,scon)
+        %read_if(99h,sbuf)
+        %read_if(0a0h,p2)
+        %read_if(0a8h,ie)
+        %read_if(0b0h,p3)
+        %read_if(0b8h,ip)
+        %read_if(0d0h,psw)
+        %read_if(0e0h,acc)
+        %read_if(0f0h,b)
+        setb    c               ;C = 1 if invalid SFR
+        ret
+
+;********************************************************************
+;                                                                   *
+; WSFR - Write Special Function Register                            *
+;                                                                   *
+;       enter:  R0 contains address of SFR                          *
+;               accumulator contains value to write                 *
+;       exit:   value written to SFR and C = 0                      *
+;               if invalid SFR, C = 1                               *
+;                                                                   *           
+;********************************************************************
+%*define(write_if(address,sfr)) local skip
+        (cjne   r0,#%address,%skip      ;%sfr
+        mov     %address,a
+        ret
+%skip:  )
+wsfr:
+        %write_if(80h,p0)
+        %write_if(81h,sp)
+        %write_if(82h,dpl)
+        %write_if(83h,dph)
+        %write_if(88h,tcon)
+        %write_if(89h,tmod)
+        %write_if(8ah,tl0)
+        %write_if(8bh,tl1)
+        %write_if(8ch,th0)
+        %write_if(8dh,th1)
+        %write_if(90h,p1)
+        %write_if(98h,scon)
+        %write_if(99h,sbuf)
+        %write_if(0a0h,p2)
+        %write_if(0a8h,ie)
+        %write_if(0b0h,p3)
+        %write_if(0b8h,ip)
+        %write_if(0d0h,psw)
+        %write_if(0e0h,acc)
+        %write_if(0f0h,b)
+        setb    c               ;if reached here, invalid
+        ret                     ;SFR, set carry flag
+        end

@@ -1,0 +1,241 @@
+$debug
+$title(*** MAIN MODULE FOR 8051 MONITOR PROGRAM ***)
+$pagewidth(98)
+$nosymbols              ;symbol table in .M51 file created by RL51
+$nopaging
+$nolist                 ;next line contains $include(macros.src)
+$include(macros.src)
+$list
+;previous line contains $list
+;********************************************************************
+;                                                                   *
+;                            M O N 5 1                              *
+;                                                                   *
+;                    (An 8051 Monitor Program)                      *
+;                                                                   *
+; Copyright (c) I. Scott MacKenzie, 1988, 1991                      *
+; Seneca College of Applied Arts and Technology                     *
+; 1750 Finch Ave. East                                              *
+; North York, Ontario                   Phone: (416)491-5050        *
+; Canada M2J 2X5                        Email: mac@seneca.bitnet    *
+;                                                                   *
+; VERSION 12 - April 1991                                           *
+;                                                                   *
+; COMMANDS: D - dump memory to console                              *
+;           G - go to user program                                  *
+;           L - load hex file                                       *
+;           S - set memory to value                                 *
+;                                                                   *
+; RESET OPTIONS:                                                    *
+;                                                                   *
+; JUMPER  INSTALLED  RESULT                                         *
+; ------  ---------  -------------------------------------------    *
+;   X3       NO      Execute MON51                                  *
+;   X3       YES     Jump to 2000H upon reset                       *
+;   X4       NO      Interrupt jump table in user RAM (8000H)       *
+;   X4       YES     Interrupt jump table in user EPROM (2000H)     *
+;   X13      NO      Serial I/O using P3.1 (TXD) and P3.0 (RXD)     *
+;   X13      YES     Serial I/O using P1.7 (TXD) and P1.6 (RXD) and *
+;                    interrupts (except if X4 installed)            *
+;********************************************************************
+        extrn   code(outchr, inline, outstr, htoa, atoh, getpar)
+        extrn   code(load, dump, setcmd, serial_io_using_interrupts)
+        extrn   data(parmtr, tb_count)
+        extrn   bit(t_flag, r_flag, r_idle)
+        public  getcmd, linbuf, buflen, endbuf, notice
+        public  error, p_bit, riot, ram, rom, x13_bit
+
+buflen  equ     20      ;maximum line length
+bel     equ     07H     ;ASCII bell code
+cr      equ     0DH     ;ASCII carriage return code
+lf      equ     0AH     ;ASCII line feed code
+riot    xdata   0100h   ;8155 RAM/IO/TIMER SBC51
+ram     equ     8000h   ;RAM address for user software
+rom     code    2000h   ;EPROM address for user firmware
+eprom   segment code
+onchip  segment data
+bitram  segment bit
+x13     bit     p1.5    ;reset option
+x3      bit     p1.4
+x4      bit     p1.3
+
+        rseg    eprom
+main:   ljmp    skip            ;jump above interrupt vectors
+        jnb     x4_bit,rom3     ;external 0 interrupt entry point
+        ljmp    ram+3
+        dw      0
+        jnb     x4_bit,rom6     ;timer 0 interrupt entry point
+        ljmp    ram+6
+        dw      0
+        jnb     x4_bit,rom9     ;external 1 interrupt entry point
+        ljmp    ram+9
+        dw      0
+        jnb     x4_bit,rom12    ;timer 1 interrupt entry point
+        ljmp    check           ;check jumper X13 first
+        dw      0
+        jnb     x4_bit,rom15    ;serial port interrupt entry point
+        ljmp    ram+15
+        dw      0
+        jnb     x4_bit,rom18    ;timer 2 interrupt entry point
+        ljmp    ram+18
+
+;********************************************************************
+; Timer 1 interrupts are used for serial I/O if jumper X13 is       *
+; installed.  P1.7 is used for TXD and P1.6 is used for RXD.        *
+; (See IO module)                                                   *
+;********************************************************************
+check:  jb      x13_bit,ram12   ;if X13 installed, serial I/O using
+        ljmp    serial_io_using_interrupts      ;interrupts
+ram12:  ljmp    ram+12          ;if X13 not installed, use RAM table
+rom3:   ljmp    rom+3           ;if X4 is installed, interrupts
+rom6:   ljmp    rom+6           ; are directed to a jump table in
+rom9:   ljmp    rom+9           ; user EPROM at 2003H (otherwise
+rom12:  ljmp    rom+12          ; directed to jump table in user
+rom15:  ljmp    rom+15          ; RAM at 8003H; see above)
+rom18:  ljmp    rom+18
+
+notice: db      'Copyright (c) I. Scott MacKenzie, 1988, 1991'
+
+;********************************************************************
+; Copy state of pins used for reset jumpers to flag bits.  Reset    *
+; jumpers are only read upon reset.  Subsequent tests are on the    *
+; flag bits.                                                        *
+;********************************************************************
+skip:   mov     c,x3
+        mov     x3_bit,c
+        mov     c,x4
+        mov     x4_bit,c
+        mov     c,x13
+        mov     x13_bit,c
+        jb      x3_bit,skip4    ;If x3 jumper installed,
+        ljmp    rom             ; jump to user EPROM at 2000H
+skip4:  jb      x13_bit,skip5   ;If x13 jumper installed,
+        clr     r_flag          ; r_flag = 0 (no character waiting)
+        setb    r_idle          ; r_idle = 1 (receiver idle)
+        setb    t_flag          ; t_flag = 1 (ready to transmit)
+        mov     tb_count,#11    ; 11 bits sent (start + 8 + stop)
+        mov     tmod,#20H       ; 8-bit auto-reload mode
+        mov     th1,#-104       ; 1 / (8 x 0.0012) us for 1200 baud
+        setb    tr1             ; start timer 1 (interrupts coming)
+        setb    ea              ; turn on timer 1 interrupts - serial
+        setb    et1             ; I/O uses P1.7 (TXD) and P1.6 (RXD)
+        sjmp    skip6           ; and skip over serial port init
+skip5:  mov     scon,#01010010B ;If x13 not installed, initialize
+        mov     th1,#0F3H       ; for 2400 baud reload value
+        mov     tmod,#20H       ;auto reload mode
+        setb    tr1             ;start timer
+skip6:  clr     p_bit           ;default = no printer output
+        mov     dptr,#riot      ;address of 8155
+        mov     a,#1            ;Port A = output
+        movx    @dptr,a         ;initialize printer port
+        mov     dptr,#hello     ;send hello message to console
+        acall   outstr
+getcmd: mov     sp,#stack - 1   ;initialize stack pointer
+        mov     dptr,#prompt    ;send prompt to console
+        acall   outstr
+        mov     r0,#linbuf      ;R0 points to line buffer
+        acall   inline          ;input command line from console
+        mov     a,linbuf        ;get first character
+        cjne    a,#cr,skip7     ;empty line?
+        jmp     setcmd          ;yes: default to "set" command
+skip7:                          ;check for alphabetic character
+        %jor    ('A','Z',error)
+        anl     a,#1fh          ;reduce to 5 bits
+        dec     a               ;reduce ASCII 'A' to 0
+        rl      a               ;adjust to word boundary
+        mov     r0,a            ;save
+        inc     a
+        mov     dptr,#table     ;command address table
+        movc    a,@a+dptr       ;get address low byte of command
+        push    acc             ;save on stack
+        mov     a,r0            ;restore accumulator
+        movc    a,@a+dptr       ;get address high byte of command
+        push    acc             ;sneaky: pushing address on stack
+        acall   getpar          ;get parameters from linbuf
+        ret                     ;pop command address into PC and
+                                ; off we go!
+table:  dw      error           ;A (Note: most commands undefined)
+        dw      error           ;B
+        dw      error           ;C
+        dw      dump            ;Dump memory locations
+        dw      error           ;E
+        dw      error           ;F
+        dw      go              ;Go to user program
+        dw      error           ;H
+        dw      error           ;I
+        dw      error           ;J
+        dw      error           ;K
+        dw      load            ;Load hex file
+        dw      error           ;M
+        dw      error           ;N
+        dw      error           ;O
+        dw      error           ;P
+        dw      error           ;Q
+        dw      error           ;R
+        dw      setcmd          ;Set memory to value
+        dw      error           ;T
+        dw      error           ;U
+        dw      error           ;V
+        dw      error           ;W
+        dw      error           ;X
+        dw      error           ;Y
+        dw      error           ;Z
+error:  mov     dptr,#emess     ;unimplemented command
+        acall   outstr
+        mov     a,linbuf        ;send out 1st two characters in
+        acall   outchr          ; line buffer too
+        mov     a,linbuf + 1
+        acall   outchr
+        jmp     getcmd
+
+;********************************************************************
+; GO to user program command.  This command is small enough to      *
+; include with the main module.                                     *
+;                                                                   *
+;  FORMAT:  GO<address>                                             *
+;                                                                   *
+;********************************************************************
+go:     mov     a,#low(getcmd)  ;if "ret" from user program,
+        push    acc             ; save "getcmd" address on stack
+        mov     a,#high(getcmd)
+        push    acc
+        push    parmtr + 1      ;push address of user program on
+        push    parmtr          ; stack
+        ret                     ;pop address into PC (Off we go!)
+
+;********************************************************************
+; ASCII null-terminated strings                                     *
+;********************************************************************
+hello:  db      cr,'MON51',0
+prompt: db      cr,'V12>',0
+emess:  db      bel,cr,'Error: Invalid Command - ',0
+
+;********************************************************************
+; Reserve 24 bytes for the stack in an absolute segment starting at *
+; 08H.  (Note: MON51 does not use register banks 1-3.)              *
+;********************************************************************
+                dseg at 8
+stack:          ds      24
+            
+;********************************************************************
+; Create a line buffer for monitor commands in a relocatable data   *
+; segment.  See linker/locator listing (.M51) for absolute address  *
+; assigned.                                                         *
+;********************************************************************
+                rseg    onchip
+linbuf:         ds      buflen          ;input command line goes here
+endbuf          equ     $
+
+;********************************************************************
+; Create 1-bit flags.  If p_bit flag set, OUTCHR transmits  to the  *
+; console and the printer; if clear, output only sent to the        *
+; console (default).  "x" bits are set to the state of the reset    *
+; jumpers as read immediately after reset.  Consult the link map    *
+; to determine the exact (i.e., absolute) location of these bits.   *
+;********************************************************************
+                rseg    bitram
+p_bit:          dbit    1
+x3_bit:         dbit    1
+x4_bit:         dbit    1
+x13_bit:        dbit    1
+                end

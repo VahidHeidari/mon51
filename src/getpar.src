@@ -1,0 +1,169 @@
+$debug
+$title(*** GET PARAMETERS FROM INPUT LINE ***)
+$pagewidth(98)
+$nosymbols
+$nopaging
+;********************************************************************
+;                                                                   *
+; GETPAR.SRC - GET PARAMETERS                                       *
+;                                                                   *
+; This routine scans the characters in the input buffer "linbuf"    *
+; and extracts the parameters used by the monitor commands.  The    *
+; input line must be of the form:                                   *
+;                                                                   *
+;  <C1><C2><P1>,<P2>,<P3>,<P4><CR>0                                 *
+;                                                                   *
+; where <C1> and <C2> are the 2-character command and <P1> to <P4>  *
+; are up to 4 parameters required by the commands.  Scanning begins *
+; after the 2-character command (i.e., at linbuf+2).                *
+;                                                                   *
+; Parameters are entered as hex ASCII codes separated by            *
+; commas.  The hex ASCII codes are converted to 16-bit binary       *
+; values and placed in memory beginning at "parmtr" in the order    *
+; high byte/low byte.                                               *
+;                                                                   *
+; Any parameters omitted retain their value from the previous       *
+; command.  Any illegal hex ASCII code terminates the scanning.     *
+;                                                                   *
+;********************************************************************
+        extrn code(ishex, atoh)
+        extrn data(linbuf)
+        public getpar, parmtr, reg_sp, bit_sp, int_sp, ext_sp, cde_sp
+
+numpar  equ     4               ;4 input parameters 
+eprom   segment code
+onchip  segment data
+bitram  segment bit
+
+        rseg    eprom
+getpar: mov     r0,#linbuf+2    ;R0 points to input line data
+        mov     r1,#parmtr      ;R1 points to parameters destination
+        mov     r7,#numpar      ;use R7 as counter
+getp2:  cjne    @r0,#',',getp3  ;parameter missing?
+        sjmp    getp4           ;yes: try to convert next parameter
+getp3:  acall   gethx           ;no:  convert it
+        jnb     found,getp5     ;if illegal byte, exit
+        cjne    @r0,#',',getp5  ;next character should be ','
+getp4:  inc     r0
+        inc     r1
+        inc     r1              ;point to next parameter destination
+        djnz    r7,getp2        ; and let's try for another 
+getp5:  acall   space           ;determine memory space selected
+        ret
+
+;********************************************************************
+; Create space for the parameters in the "onchip" data segment.     *
+;********************************************************************
+        rseg    onchip
+parmtr: ds      numpar*2        ;2 bytes required for each parameter
+
+;********************************************************************
+; GETHX - GET HeX word from "linbuf"                                *
+;                                                                   *
+;       enter:  R0 points to string                                 *
+;               R1 points to 2-byte destination                     *
+;       exit:   hex word in memory                                  *
+;               R0 points to next non-hex character in string       *
+;               'found' = 1 if legal value found or 0 otherwise     *
+;       uses:   atoh, insrt, ishex                                  *
+;                                                                   *
+;********************************************************************
+        rseg    eprom
+gethx:  clr     found           ;default = no value found
+        mov     a,@r0
+        acall   ishex           ;any value?
+        jnc     gethx9          ;no:  return
+gethx2: setb    found           ;set value found flag
+        clr     a
+        mov     @r1,a           ;clear destination value
+        inc     r1
+        mov     @r1,a
+        dec     r1
+gethx3: mov     a,@r0           ;get value
+        acall   ishex           ;value found?
+        jnc     gethx9          ;no:  return
+        acall   atoh            ;yes: attempt to convert it
+        acall   insrt           ; and insert into parameter
+        inc     r0              ;increment buffer pointer
+        sjmp    gethx3          ;repeat until illegal value
+gethx9: ret
+
+;********************************************************************
+; Create space for a "found" bit which is set as the command line   *
+; is scanned.                                                       *
+;********************************************************************
+        rseg    bitram
+found:  dbit    1
+
+;********************************************************************
+; INSRT - INSeRT nibble from A into 16-bit value pointed at by R1   *
+;                                                                   *
+;       enter:  ACC.0 to ACC.3 contains hex nibble                  *
+;               R1 points to 2-byte RAM location                    *
+;       exit:   16-bit value shifted left 4 and nibble in ACC       *
+;                inserted into least significant digit              *
+;                                                                   *
+;********************************************************************
+        rseg    eprom
+        using   0
+insrt:  push    AR7             ;use R7 as counter
+        push    AR0             ;use R0 to point to lsb
+        mov     r0,1            ;R0 <-- R1
+        inc     r0
+        mov     r7,#4           ;4 rotates
+        swap    a
+insrt2: rlc     a
+        push    acc
+        mov     a,@r0
+        rlc     a
+        mov     @r0,a
+        mov     a,@r1
+        rlc     a
+        mov     @r1,a
+        pop     acc
+        djnz    r7,insrt2
+        pop     AR0             ;R0
+        pop     AR7             ;R7
+        ret
+
+;********************************************************************
+; SPACE - determine memory SPACE selector as per second character   *
+;         in command line as follows:                               *
+;                                                                   *
+;               B = bit space                                       *
+;               C = code space                                      *
+;               I = internal data                                   *
+;               R = Special Functions Registers                     *
+;               X = external data                                   *
+;                                                                   *
+;********************************************************************
+space:  clr     bit_sp          ;default: no space selected
+        clr     cde_sp          ; clear all bits
+        clr     int_sp
+        clr     reg_sp
+        clr     ext_sp
+        mov     a,linbuf+1      ;memory space selector in command
+        cjne    a,#'B',spac2    ;determine space and set selector bit
+        setb    bit_sp
+spac2:  cjne    a,#'C',spac3
+        setb    cde_sp
+spac3:  cjne    a,#'I',spac4
+        setb    int_sp
+spac4:  cjne    a,#'R',spac5
+        setb    reg_sp
+spac5:  cjne    a,#'X',spac6
+        setb    ext_sp
+spac6:  ret
+
+;********************************************************************
+; Create space for the memory space selector bits in the 8031       *
+; bit-addressable space.  See link map for exact address of each of *
+; these bits.                                                       *
+;********************************************************************
+        rseg    bitram
+bit_sp: dbit    1
+cde_sp: dbit    1
+int_sp: dbit    1
+reg_sp: dbit    1
+ext_sp: dbit    1
+        end

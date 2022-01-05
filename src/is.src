@@ -1,0 +1,89 @@
+$title (*** IS ROUTINES ***)
+$debug
+$pagewidth (98)
+$nopaging
+$nosymbols
+$nolist                 ;next line contains $include(macros.src)
+$include (macros.src)
+$list
+;previous line contains $list
+;********************************************************************
+;                                                                   *
+; IS.SRC - IS SUBROUTINES                                           *
+;                                                                   *
+; These subroutines test a byte to see if it matches a certain      *
+; condition.  If so, they return with the carry flag set; if not,   *
+; they return with the carry flag clear.  These subroutines only    *
+; alter the carry flag; the accumulator is left intact.             *
+;                                                                   *
+;********************************************************************
+
+        public  isgrph, ishex, isdig, isalph
+eprom   segment code
+        rseg    eprom
+        
+;********************************************************************
+;                                                                   *
+; ISGRPH - IS the byte an ascii GRaPHic code (i.e., in the range    *
+;          20H to 7EH)                                              *
+;                                                                   *
+;       enter:  ASCII code in accumulator                           *
+;       exit:   C = 1 if code is ASCII graphic character            *
+;               C = 0 if code is ASCII control character            *
+;                                                                   *
+;********************************************************************
+isgrph: cjne    a,#20h,$+3      ;set C if < space
+        jbc     cy,isgrp2       ;if set, clear and return
+        cjne    a,#7fh,$+3      ;set C, if graphic
+isgrp2: ret
+
+;********************************************************************
+;                                                                   *
+; ISHEX - IS character ascii HEX?                                   *
+;                                                                   *
+;       enter:  ASCII code in ACC                                   *
+;       exit:   C = 1 if in range 0-9, a-f, or A-F                  *
+;               C = 0 otherwise                                     *
+;       uses:   isdigt                                              *
+;                                                                   *
+;********************************************************************
+ishex:  push    acc
+        call    isdig
+        jc      skip            ;if digit, then ishex = true
+        setb    acc.5           ;convert to lowercase
+        cjne    a,#'a',$+3      ;C = 1 if < 'a'
+        jbc     cy,skip         ;if 1, clear and return
+        cjne    a,#'f'+1,$+3    ;carry set if hex
+skip:   pop     acc
+        ret
+
+;********************************************************************
+;                                                                   *
+; ISDIG - IS ascii code a DIGit?                                    *
+;                                                                   *
+;       enter:  ASCII code in accumulator                           *
+;       exit:   C = 1 if code is character in range 0-9             *
+;               C = 0 otherwise                                     *
+;                                                                   *
+;********************************************************************
+isdig:  cjne    a,#'0',$+3      ;carry set if < 0
+        jbc     cy,skip2        ;if set, clear and return
+        cjne    a,#'9'+1,$+3    ;carry set if digit
+skip2:  ret
+
+;********************************************************************
+;                                                                   *
+; ISALPH - IS ascii code an ALPHabetic character                    *
+;                                                                   *
+;       enter:  ASCII code in accumulator                           *
+;       exit:   C = 1 if code is character in range a-z or A-Z      *
+;               C = 0 otherwise                                     *
+;                                                                   *
+;********************************************************************
+isalph: %jir    ('a','z',yes)
+        %jir    ('A','Z',yes)
+        clr     c               ;if reached here, can't be alpha
+        ret
+yes:    setb    c               ;must be alphabetic character
+        ret
+        end
